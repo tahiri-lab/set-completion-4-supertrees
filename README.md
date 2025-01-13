@@ -1,1 +1,1 @@
-# multiset-completion-4-supertrees
+# Phylogenetic tree multiset completion in the context of supertrees
