@@ -38,7 +38,7 @@ def is_rooted_ete(tree):
     return (len(root.children) <= 2)
 
 def midpoint_root(tree):
-    """If not recognized as rooted, try midpoint rooting."""
+    """If not recognized as rooted, try rooting."""
     try:
         og = tree.get_midpoint_outgroup()
         if og == tree:
@@ -135,6 +135,20 @@ def extract_splits(tree):
         if len(leaves_under) <= total_leaves / 2:
             splits.append(frozenset(leaves_under))
     return splits
+
+def compute_weights_globally():
+    """Uses global_T_set and global_T_i to compute weights for each host tree."""
+    if not global_T_set or global_T_i is None:
+        return {}
+    L_Ti = get_leaf_set_ete(global_T_i)
+    denom = len(L_Ti)
+    wt = {}
+    for idx, T_j in enumerate(global_T_set):
+        L_Tj = get_leaf_set_ete(T_j)
+        ov = len(L_Tj & L_Ti)
+        w_j = ov/denom if denom > 0 else 0
+        wt[idx] = w_j
+    return wt
 
 def build_weighted_consensus_topology(S_list, p, T_i):
     from collections import defaultdict
@@ -316,6 +330,7 @@ def extract_clusters(tree, U, multi_leaf=True):
     clusters = []
     for nd in tree.traverse("postorder"):
         if nd.is_leaf():
+            # Single leaf cluster (if multi_leaf=False)
             if not multi_leaf:
                 if nd.name and nd.name in U:
                     clusters.append(frozenset([nd.name]))
@@ -430,19 +445,6 @@ TEMP_PREFIX = "__temp__"
 global_T_set = []
 global_T_i = None
 
-def compute_weights_globally():
-    if not global_T_set or global_T_i is None:
-        return {}
-    L_Ti = get_leaf_set_ete(global_T_i)
-    denom = len(L_Ti)
-    wt = {}
-    for idx, T_j in enumerate(global_T_set):
-        L_Tj = get_leaf_set_ete(T_j)
-        ov = len(L_Tj & L_Ti)
-        w_j = ov/denom if denom > 0 else 0
-        wt[idx] = w_j
-    return wt
-
 def compute_average_distances(S_list, wt):
     alls = set()
     for (S_j, _, _, _) in S_list:
@@ -485,9 +487,31 @@ def compute_average_distances(S_list, wt):
             avg_dist[(la, lb)] = 0.0
     return avg_dist, alls
 
-##############
-# Insert BFS 
-##############
+##############################
+# Naming internal nodes
+##############################
+
+def assign_internal_node_names(tree, prefix="INODE"):
+    """
+    Assigns unique names to internal nodes so that they can be tracked more easily.
+    """
+    idx = 1
+    for nd in tree.traverse("preorder"):
+        if not nd.is_leaf():
+            nd.name = f"{prefix}_{idx}"
+            idx += 1
+            
+def clear_internal_node_names(tree):
+    """
+    Clears the names of all internal nodes in the tree.
+    """
+    for node in tree.traverse():
+        if not node.is_leaf():
+            node.name = ""
+
+##############################
+# Insert BFS
+##############################
 
 def InsertTempLeaves(tree,
                      target_leaf,
@@ -742,11 +766,6 @@ def insert_midpoint_and_new_subtree(tree, prev_node, curr_node, excess, subtree,
 
     return tree
 
-def clear_internal_node_names(tree):
-    for nd in tree.traverse():
-        if not nd.is_leaf():
-            nd.name = ''
-
 ##############################
 # FALLBACK for entire subtree
 ##############################
@@ -760,7 +779,7 @@ def fallback_insert_subtree_entire(T_i_updated,
     # remove partial placeholders
     partial_temp = [x for x in T_i_updated.get_leaf_names() if x.startswith(TEMP_PREFIX)]
     if partial_temp:
-        print(f"[FALLBACK NOTICE] Removing {len(partial_temp)} partial placeholder(s) before fallback.")
+        #print(f"[FALLBACK NOTICE] Removing {len(partial_temp)} partial placeholder(s) before fallback.")
         keep = [x for x in T_i_updated.get_leaf_names() if not x.startswith(TEMP_PREFIX)]
         T_i_updated.prune(keep, preserve_branch_length=True)
 
@@ -774,22 +793,22 @@ def fallback_insert_subtree_entire(T_i_updated,
 
     T_leaves = T_i_updated.get_leaves()
     if len(T_leaves) < 2:
-        print("[FALLBACK NOTICE] T_i has <2 leaves => fallback attach at root.")
+        #print("[FALLBACK NOTICE] T_i has <2 leaves => fallback attach at root.")
         T_i_updated.add_child(S_star_adj, dist=attach_len)
     else:
         placeholders_main = [lf.name for lf in T_leaves]
         prev_node, curr_node, excess, _, orig_dist = compute_midpoint(T_i_updated, placeholders_main)
         if (not prev_node) or (not curr_node):
-            print("[FALLBACK NOTICE] Could not compute midpoint => fallback attach at root.")
+            #print("[FALLBACK NOTICE] Could not compute midpoint => fallback attach at root.")
             T_i_updated.add_child(S_star_adj, dist=attach_len)
         else:
-            print("[FALLBACK NOTICE] Attaching entire subtree via fallback.")
+            #print("[FALLBACK NOTICE] Attaching entire subtree via fallback.")
             T_i_updated = insert_midpoint_and_new_subtree(
                 T_i_updated, prev_node, curr_node, excess,
                 S_star_adj, attach_len, orig_dist
             )
 
-    clear_internal_node_names(T_i_updated)
+    assign_internal_node_names(T_i_updated)
     return T_i_updated
 
 ##############################
@@ -977,26 +996,26 @@ def finalize_subtree_insertion(T_i_updated,
                                inserted_subtree_leaves_global):
     """
     After BFS, attach subtree using placeholders in T_i_updated.
+    Then verify that subtree was actually attached; if not, fallback.
     """
+    subtree_leaves_set = get_leaf_set_ete(S_star_adj)
+
+    # Scale the subtree by tau_global
     if hasattr(S_star_adj, 'connecting_length') and S_star_adj.connecting_length > 0:
         attach_len = S_star_adj.connecting_length * tau_global
     else:
         attach_len = 1.0
-
-    # Scale the subtree by tau_global
     for nd in S_star_adj.traverse():
         nd.dist *= tau_global
 
-    # Only keep placeholders that still exist in T_i_updated
     valid_placeholders = [x for x in placeholders_global if T_i_updated.search_nodes(name=x)]
     n_placeholders = len(valid_placeholders)
 
+    # Try inserting the subtree via midpoint or direct attachment
     if n_placeholders == 0:
-        print("[INFO] BFS produced 0 placeholders => attach subtree at root.")
         T_i_updated.add_child(S_star_adj, dist=attach_len)
 
     elif n_placeholders == 1:
-        print("[INFO] BFS produced exactly 1 placeholder => parent's node is midpoint.")
         single_name = valid_placeholders[0]
         node_list = T_i_updated.search_nodes(name=single_name)
         if node_list:
@@ -1008,7 +1027,6 @@ def finalize_subtree_insertion(T_i_updated,
                 par.add_child(S_star_adj, dist=br)
 
     elif n_placeholders == 2:
-        print("[INFO] BFS produced exactly 2 placeholders => create midpoint node.")
         lf1, lf2 = sorted(valid_placeholders)
         prev_node, curr_node, excess, _, br_len = compute_midpoint(T_i_updated, [lf1, lf2])
         if prev_node and curr_node:
@@ -1017,7 +1035,6 @@ def finalize_subtree_insertion(T_i_updated,
                 S_star_adj, attach_len, br_len
             )
     else:
-        print(f"[INFO] BFS produced {n_placeholders} placeholders => standard midpoint insertion.")
         prev_node, curr_node, excess, _, br_len = compute_midpoint(T_i_updated, sorted(valid_placeholders))
         if prev_node and curr_node:
             insert_midpoint_and_new_subtree(
@@ -1025,17 +1042,26 @@ def finalize_subtree_insertion(T_i_updated,
                 S_star_adj, attach_len, br_len
             )
 
-    # Remove placeholders
+    # Now remove placeholders
     final_temp = [x for x in T_i_updated.get_leaf_names() if x.startswith(TEMP_PREFIX)]
     if final_temp:
         keep = [x for x in T_i_updated.get_leaf_names() if not x.startswith(TEMP_PREFIX)]
         T_i_updated.prune(keep, preserve_branch_length=True)
 
-    inserted_subtree_leaves_global.update(get_leaf_set_ete(S_star_adj))
-    clear_internal_node_names(T_i_updated)
+    # Assign internal node names again
+    assign_internal_node_names(T_i_updated)
+
+    # Final check: did we actually attach the subtree's leaves?
+    new_leaves_in_tree = get_leaf_set_ete(T_i_updated)
+    missing_still = subtree_leaves_set - new_leaves_in_tree
+    if missing_still:
+        # Fallback if something went wrong
+        fallback_insert_subtree_entire(T_i_updated, S_star_adj, tau_global)
+    else:
+        # Mark that we've indeed inserted these leaves
+        inserted_subtree_leaves_global.update(subtree_leaves_set)
 
     return True
-
 
 def try_inserting_subtree(T_i_updated,
                           T_i_original,
@@ -1100,7 +1126,6 @@ if __name__ == "__main__":
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    # A helper to find the intersection of leaves in multiple trees
     def get_common_leaves(trees):
         if not trees:
             return set()
@@ -1178,8 +1203,8 @@ if __name__ == "__main__":
                     p_has_reduced = False
 
                     while U and p >= 0:
+                        # Try multi-leaf clusters first
                         if not p_has_reduced:
-                            # Multi-leaf clusters
                             S_list_multi = selection_of_mcs(T_i_updated, host_list, U, p, multi_leaf=True)
                             if S_list_multi:
                                 ctrees_multi, hosts_multi = build_consensus_mcs(S_list_multi, p)
@@ -1200,7 +1225,7 @@ if __name__ == "__main__":
                                     if new_size_after < new_size_before:
                                         continue
 
-                        # Single-leaf clusters
+                        # Next, try single-leaf clusters
                         S_list_single = selection_of_mcs(T_i_updated, host_list, U, p, multi_leaf=False)
                         if S_list_single:
                             ctrees_single, hosts_single = build_consensus_mcs(S_list_single, p)
@@ -1251,6 +1276,7 @@ if __name__ == "__main__":
         try:
             with open(output_filename, "w") as fout:
                 for comp_tree in completed_list:
+                    clear_internal_node_names(comp_tree)
                     fout.write(comp_tree.write(format=1) + "\n")
         except Exception as e:
             print(f"  [ERROR] Failed to write to {output_filename}: {e}")
