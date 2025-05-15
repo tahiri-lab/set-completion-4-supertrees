@@ -2,7 +2,7 @@
 
 This project introduces an innovative method for completing a set of phylogenetic trees by minimizing the addition of new taxa while maintaining key evolutionary signals. Building on existing tree completion techniques, it incorporates consensus maximal completion subtrees and combined branch length data to enhance the process. This ensures that the completion is both biologically relevant and computationally efficient. Each tree in the set is iteratively completed by adding missing taxa using consensus subtrees derived from overlapping information in the other trees. The outcome is a collection of completed trees that serve as a foundation for creating multiple comprehensive consensus trees, which provide a cluster-based depiction of alternative supertrees.
 
->**Please note that this project is under development and is not a final version.** Features and functionalities are subject to change, and the tool may undergo significant updates. Use it at your own discretion, and feel free to contribute or provide feedback to help improve its capabilities.
+>**Please note that this project is under development.** Features and functionalities are subject to change, and the tool may undergo significant updates. Use it at your own discretion, and feel free to contribute or provide feedback to help improve its capabilities.
 
 ## Features
 
@@ -31,7 +31,7 @@ The main script is `multiset_completion.py`. To execute the script:
 2. **Run the script**
 
    ```bash
-   python multiset_completion.py.py
+   python multiset_completion.py
    ```
 
    *Note: The script is configured to process files named `multiset_X.txt` in the `input_multisets` folder and output completed trees to the `completed_multisets` folder as `completed_multiset_X.txt`.*
