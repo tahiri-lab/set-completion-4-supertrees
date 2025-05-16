@@ -22,7 +22,7 @@ This project introduces an innovative method for completing a set of phylogeneti
 
 ### Running the Script
 
-The main script is `multiset_completion.py`. To execute the script:
+The main script is `tree_set_completion.py`. To execute the script:
 
 1. **Ensure input files are in place**
 
@@ -31,7 +31,7 @@ The main script is `multiset_completion.py`. To execute the script:
 2. **Run the script**
 
    ```bash
-   python multiset_completion.py
+   python tree_set_completion.py
    ```
 
    *Note: The script is configured to process files named `multiset_X.txt` in the `input_multisets` folder and output completed trees to the `completed_multisets` folder as `completed_multiset_X.txt`.*
