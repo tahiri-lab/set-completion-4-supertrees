@@ -188,7 +188,7 @@ def find_optimal_insertion_point(target_tree, Dtgt,
         ncl_set    = set(ncl_names)
         below = set(ch.get_leaf_names()) & ncl_set
         if len(below) == 0 or len(below) == len(ncl_names):
-            continue                           # anchors all on one side → skip
+            continue                           # anchors all on one side - skip
 
         m             = len(ncl_names)
         ch_leaf_set   = set(ch.get_leaf_names())   # cache per edge
@@ -353,7 +353,7 @@ def insert_subtree_kncl(target_tree, original_target,
         # --- SINGLE-LEAF CASE ------------------------------------------
         # 1. grab the only child (= real leaf)
         leaf = next(iter(S.children))
-        # 2.   …and SEVER it from the dummy root so it has no other parent
+        # 2.   …and separate it from the dummy root so it has no other parent
         leaf.detach()
         S = S_root = leaf
         attach_len = 0.0            # no connector edge for single leaves
@@ -369,17 +369,17 @@ def insert_subtree_kncl(target_tree, original_target,
     for n in S_root.traverse():
         n.add_feature("inInserted", True)
     
-    # 3. average distances leaf ↔ MRCA(subtree_leaves) across hosts
+    # 3. average distances leaf and MRCA(subtree_leaves) across hosts
         
     d_avg = {}
     for c in anchor_leaves_original:
-        if c in subtree_leaves:          # anchor is inside S  → scale by τ
+        if c in subtree_leaves:          # anchor is inside S  - scale by τ
             try:
                 d_avg[c] = τ * subtree_star.get_distance(
                                c, subtree_star.get_common_ancestor(list(subtree_leaves)))
             except:
                 d_avg[c] = 0.0
-        else:                            # anchor is outside S → no τ-scaling
+        else:                            # anchor is outside S - no τ-scaling
             d_avg[c] = compute_leaf_lca_distance_from_hosts(
                            c, host_trees, subtree_leaves)
         
@@ -389,7 +389,7 @@ def insert_subtree_kncl(target_tree, original_target,
     pairs = sorted(d_avg.items(), key=lambda t: t[1])
     kth = pairs[min(k, len(pairs))-1][1] if pairs else 0.0
     ncl = [name for name,d in pairs if d <= kth+1e-15]
-    if len(ncl)<2: return False        # need ≥2 anchors for optimisation
+    if len(ncl)<2: return False        # need ≥2 anchors for optimization
 
     # 5.  target distances d_p  (leaf-based scaling ρ_c)
     d_p = {}
@@ -434,7 +434,6 @@ def extract_splits(tree):
             splits.append(frozenset(leaves_under))
     return splits
 
-
 def compute_weights_globally():
     if not global_T_set or global_T_i is None:
         return {}
@@ -447,7 +446,6 @@ def compute_weights_globally():
         w_j = ov/denom if denom > 0 else 0
         wt[idx] = w_j
     return wt
-
 
 def build_consensus_topology_from_splits_and_root(leaves, majority_splits, best_root_clade):
     t = Tree();  t.name = "WeightedConsensus";  t.dist = 0.0
@@ -486,7 +484,6 @@ def build_consensus_topology_from_splits_and_root(leaves, majority_splits, best_
             nd.dist = 1e-9
     return t
 
-
 def build_weighted_consensus_topology(S_list, p, T_i):
     all_leaves, root_clade_counts, split_counts = set(), defaultdict(float), defaultdict(float)
     w_j = compute_weights_globally();     sum_w = sum(w_j.values())
@@ -507,8 +504,6 @@ def build_weighted_consensus_topology(S_list, p, T_i):
     return build_consensus_topology_from_splits_and_root(all_leaves, majority_splits, best_root), \
            sorted({host_idx for (_, _, host_idx, _) in S_list})
 
-
-# --------------------------------------------------------------------------
 # branch lengths
 
 def least_squares_fit_branch_lengths(consensus_tree, avg_dist):
@@ -593,7 +588,6 @@ def extract_clusters(tree, U, multi_leaf=True):
                 clusters.append(frozenset(leaves_under))
     return clusters
 
-
 def frequency_and_filter(C, T_set, p, wt):
     sum_w=sum(wt[idx] for idx in range(len(T_set)))
     C_freq={c: sum(wt[idx] for idx,Tj in enumerate(T_set)
@@ -602,12 +596,10 @@ def frequency_and_filter(C, T_set, p, wt):
     C_p=[c for c in C if C_freq[c]>p]
     return C_p, C_freq
 
-
 def group_clusters_by_leafset(C_p):
     groups=defaultdict(list)
     for c in C_p: groups[frozenset(c)].append(c)
     return list(groups.values())
-
 
 def max_coverage_group(groups, U):
     best = None         # group that gives max coverage
@@ -620,7 +612,6 @@ def max_coverage_group(groups, U):
             best     = G
     return best
 
-
 def extract_subtree(C, T):
     if not C: return None
     copyT=T.copy(method='deepcopy')
@@ -630,7 +621,6 @@ def extract_subtree(C, T):
     for nd in copyT.traverse("postorder"):
         nd.dist=max(nd.dist or 0.0, 1e-9)
     return copyT if get_leaf_set_ete(copyT) else None
-
 
 def selection_of_mcs(T_i, T_set, U, p=0.5, multi_leaf=True):
     C=set().union(*(extract_clusters(Tj,U,multi_leaf) for Tj in T_set))
@@ -670,6 +660,7 @@ def build_consensus_mcs(S_list, p=0.5):
     combined_avg=max(combined_avg,1e-9)
 
     # --- single-leaf consensus
+ 
     if max_leaf_count==1:
         leaf2lens=defaultdict(list)
         for (Sj,_,_,cl) in S_list:
@@ -685,6 +676,7 @@ def build_consensus_mcs(S_list, p=0.5):
         return single_trees, host_lists
 
     # --- multi-leaf consensus
+ 
     consensus_tree, host_idxs = build_weighted_consensus_topology(S_list,p,global_T_i)
     if not consensus_tree or len(consensus_tree)==0: return [],[]
     consensus_tree.connecting_length = combined_avg
