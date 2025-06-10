@@ -8,23 +8,22 @@
 Tree-set completion algorithm.
 
  – Reads each multiset  input_multisets/multiset_*.txt
- – Completes every tree
  - Constructs consensus MCS
- – Inserts each consensus MCS 
+ – Inserts each consensus MCS to complete a tree
  – Writes completed sets to completed_multisets/completed_multiset_i.txt
 """
 
-# ───────────────────────── standard libs ──────────────────────────
+# ───────────────────────── import ──────────────────────────
 import os, re, math, argparse, glob
 from collections import defaultdict
 import numpy  as np
 from ete3 import Tree
 
-# These are used by compute_weights_globally() and downstream helpers
+# These are used by compute_weights_globally() and some helpers
 global_T_set = []          # store the current list of host trees
 global_T_i   = None        # store the current target tree
 
-# ───────────────────────────── CLI opts ───────────────────────────
+# ───────────────────────────── CLI ───────────────────────────
 ap = argparse.ArgumentParser()
 ap.add_argument("--k", type=int, default=None,
                 help="k for the number of common leaves (default = |common|)")
@@ -72,7 +71,7 @@ def clear_internal_node_names(t):
         if not n.is_leaf(): n.name = ""
 
 # 
-# Section 2.DISTANCE ORACLE & optimisation helpers 
+# Section 2.Distance oracle & optimization helpers 
 #
 
 from functools import lru_cache
@@ -82,7 +81,7 @@ class DistOracle:
     """O(1) distance queries between any two nodes after O(n log n) build."""
     __slots__ = ("dist_to_root","_euler","_depth","_first","_st","_log2",
                  "_dist_cached")
-    # ─────────────────────────────────────────────────────────────
+
     def __init__(self, tree: Tree, cache_size=20_000):
         self.dist_to_root = {}
         self._annotate_depth(tree)
@@ -94,10 +93,10 @@ class DistOracle:
                     self.dist_to_root[b] -
                     2 * self.dist_to_root[lca])
         self._dist_cached = _dc
-    # ─────────────────────────────────────────────────────────────
+
     def dist(self, a, b): return self._dist_cached(a, b)
     def dist_leaf_to_node(self, leaf, node): return self.dist(leaf, node)
-    # ─────────────────────────────────────────────────────────────
+
     def _annotate_depth(self, tree):
         for n in tree.traverse("preorder"):
             self.dist_to_root[n] = 0.0 if n.up is None else \
@@ -133,14 +132,13 @@ class DistOracle:
         return self._euler[left] if self._depth[left]<self._depth[right] \
                else self._euler[right]
 
-# ──────────────────────────────────────────────────────────────────
+
 def scale_subtree(root, factor):
     for n in root.traverse(): n.dist *= factor
 
-def find_distinct_leaves(T, common):       # leaves unique to T wrt common
+def find_distinct_leaves(T, common):       # leaves unique to T
     return get_leaf_set_ete(T) - common
 
-# ──────────────────────────────────────────────────────────────────
 
 def find_optimal_insertion_point(target_tree, Dtgt,
                                  subtree_root,
@@ -158,10 +156,9 @@ def find_optimal_insertion_point(target_tree, Dtgt,
     subtree_root: ete3.TreeNode  (kept for backward compatibility)
     ncl_names   : list[str]      common leaves
     d_p         : dict           target distances after leaf–based scaling
-    dl_names    : set[str]       “distinct leaves” (anchors must avoid edges
-                                 already containing any of these)
+    dl_names    : set[str]       "distinct leaves" (anchors must avoid edges already containing any of these)
     min_terminal: float          minimum length to leave on each side
-    eps         : float          tolerance for “almost parent/child”
+    eps         : float          tolerance for "almost parent/child"
     """
     best_edge, best_x, best_val = None, 0.0, float("inf")
     dl_names   = set(dl_names)
@@ -172,11 +169,11 @@ def find_optimal_insertion_point(target_tree, Dtgt,
             continue                               # root has no parent edge
         
 
-        # —— skip edges that are fully inside a previously inserted subtree
+        # skip edges that are fully inside a previously inserted subtree
         if getattr(ch,  "inInserted", False):
             continue
 
-        # —— avoid edges whose subtree already contains a DL
+        # avoid edges whose subtree already contains a DL
         if set(ch.get_leaf_names()) & dl_names:
             continue
 
@@ -192,6 +189,7 @@ def find_optimal_insertion_point(target_tree, Dtgt,
 
         m             = len(ncl_names)
         ch_leaf_set   = set(ch.get_leaf_names())   # cache per edge
+     
         # ----- closed-form optimum  ---------------------------
         num = 0.0
         for n in ncl_names:
@@ -200,7 +198,7 @@ def find_optimal_insertion_point(target_tree, Dtgt,
                           Dtgt.dist_leaf_to_node(target_tree & n, par))
         x_opt = num / (elen * m)
 
-        # —— clamp x into the valid range [0,1)
+        # clamp x into the valid range [0,1)
         if ch.is_leaf():          # cannot split within a terminal branch
             x_opt = max(0.0, min(x_opt, 1 - min_terminal / elen))
         else:
@@ -225,20 +223,18 @@ def insert_subtree_at_point(target_tree, edge, x_opt, subtree_copy,
     parent, child = edge
     orig_len = child.dist
 
-    # ---------------------------------------------------------------
     # 1. almost-parent
     if x_opt <= eps:
         parent.add_child(subtree_copy)
         return
 
-    # ---------------------------------------------------------------
     # 2. almost-child
     if x_opt >= 1 - eps:
-        # ── if child is internal, we can safely hang the subtree under it
+        # if child is internal, we can safely insert the subtree under it
         if not child.is_leaf():
             child.add_child(subtree_copy)
             return
-        # ── if child is a LEAF, we must split the edge to keep the leaf label
+        # if child is a LEAF, we must split the edge to keep the leaf label
         d_up   = max(orig_len - min_terminal, min_terminal)
         d_down = min_terminal
         mid = Tree(); mid.dist = d_up
@@ -252,7 +248,6 @@ def insert_subtree_at_point(target_tree, edge, x_opt, subtree_copy,
         assign_internal_node_names(target_tree)
         return
 
-    # ---------------------------------------------------------------
     # 3. genuine split
     d_up   = max(x_opt * orig_len,       min_terminal)
     d_down = max((1 - x_opt) * orig_len, min_terminal)
@@ -350,10 +345,11 @@ def insert_subtree_kncl(target_tree, original_target,
     
     #  single-leaf vs. multi-leaf handling
     if len(subtree_leaves) == 1:
-        # --- SINGLE-LEAF CASE ------------------------------------------
+        # --- SINGLE-LEAF CASE ---
         # 1. grab the only child (= real leaf)
         leaf = next(iter(S.children))
-        # 2.   …and separate it from the dummy root so it has no other parent
+     
+        # 2.  separate it from the dummy root so it has no other parent
         leaf.detach()
         S = S_root = leaf
         attach_len = 0.0            # no connector edge for single leaves
@@ -369,8 +365,7 @@ def insert_subtree_kncl(target_tree, original_target,
     for n in S_root.traverse():
         n.add_feature("inInserted", True)
     
-    # 3. average distances leaf and MRCA(subtree_leaves) across hosts
-        
+    # 3. average distances leaf and MRCA(subtree_leaves) across hosts        
     d_avg = {}
     for c in anchor_leaves_original:
         if c in subtree_leaves:          # anchor is inside S  - scale by τ
@@ -389,7 +384,7 @@ def insert_subtree_kncl(target_tree, original_target,
     pairs = sorted(d_avg.items(), key=lambda t: t[1])
     kth = pairs[min(k, len(pairs))-1][1] if pairs else 0.0
     ncl = [name for name,d in pairs if d <= kth+1e-15]
-    if len(ncl)<2: return False        # need ≥2 anchors for optimization
+    if len(ncl)<2: return False        # need >= 2 anchors for optimization
 
     # 5.  target distances d_p  (leaf-based scaling ρ_c)
     d_p = {}
@@ -547,7 +542,6 @@ def least_squares_fit_branch_lengths(consensus_tree, avg_dist):
             pass
     return consensus_tree
 
-
 def compute_average_distances(S_list, wt):
     alls=set().union(*(get_leaf_set_ete(S_j) for (S_j,_,_,_) in S_list))
     alls=sorted(alls)
@@ -572,7 +566,6 @@ def compute_average_distances(S_list, wt):
     return avg_dist, alls
 
 
-# --------------------------------------------------------------------------
 def extract_clusters(tree, U, multi_leaf=True):
     clusters=[]
     for nd in tree.traverse("postorder"):
@@ -614,12 +607,12 @@ def max_coverage_group(groups, U):
 
 def extract_subtree(C, T):
     if not C: return None
-    copyT=T.copy(method='deepcopy')
-    leaves_to_prune=set(x.name for x in copyT.get_leaves() if x.name)-C
+    copyT = T.copy(method='deepcopy')
+    leaves_to_prune = set(x.name for x in copyT.get_leaves() if x.name)-C
     for lf in leaves_to_prune:
         for nd in copyT.search_nodes(name=lf): nd.detach()
     for nd in copyT.traverse("postorder"):
-        nd.dist=max(nd.dist or 0.0, 1e-9)
+        nd.dist = max(nd.dist or 0.0, 1e-9)
     return copyT if get_leaf_set_ete(copyT) else None
 
 def selection_of_mcs(T_i, T_set, U, p=0.5, multi_leaf=True):
@@ -628,7 +621,7 @@ def selection_of_mcs(T_i, T_set, U, p=0.5, multi_leaf=True):
     wt = compute_weights_globally()
     C_p,_ = frequency_and_filter(C,T_set,p,wt)
     if not C_p: return []
-    G=max_coverage_group(group_clusters_by_leafset(C_p),U)
+    G = max_coverage_group(group_clusters_by_leafset(C_p),U)
     if not G: return []
 
     S_list=[]
@@ -637,20 +630,19 @@ def selection_of_mcs(T_i, T_set, U, p=0.5, multi_leaf=True):
             if c.issubset(get_leaf_set_ete(T_j)):
                 conn_len = 1.0
                 if len(c)==1:
-                    lf=next(iter(c))
-                    nd=T_j&lf
-                    conn_len=nd.dist if nd.dist>0 else 1.0
+                    lf = next(iter(c))
+                    nd = T_j&lf
+                    conn_len = nd.dist if nd.dist>0 else 1.0
                 else:
                     try:
-                        mm=T_j.get_common_ancestor(list(c))
-                        conn_len=mm.dist if mm and mm.dist>0 else 1.0
+                        mm = T_j.get_common_ancestor(list(c))
+                        conn_len = mm.dist if mm and mm.dist>0 else 1.0
                     except: pass
-                sub=extract_subtree(c,T_j)
+                sub = extract_subtree(c,T_j)
                 if sub: S_list.append((sub,T_j,idx,float(conn_len)))
     return S_list
 
 
-# --------------------------------------------------------------------------
 def build_consensus_mcs(S_list, p=0.5):
     if not S_list: return [],[]
     max_leaf_count=max(len(get_leaf_set_ete(x[0])) for x in S_list)
@@ -659,7 +651,7 @@ def build_consensus_mcs(S_list, p=0.5):
                   if connecting_lens else 1.0)
     combined_avg=max(combined_avg,1e-9)
 
-    # --- single-leaf consensus
+    # single-leaf consensus
  
     if max_leaf_count==1:
         leaf2lens=defaultdict(list)
@@ -675,7 +667,7 @@ def build_consensus_mcs(S_list, p=0.5):
                  if lf in get_leaf_set_ete(S)}))
         return single_trees, host_lists
 
-    # --- multi-leaf consensus
+    # multi-leaf consensus
  
     consensus_tree, host_idxs = build_weighted_consensus_topology(S_list,p,global_T_i)
     if not consensus_tree or len(consensus_tree)==0: return [],[]
@@ -719,7 +711,7 @@ def complete_all_multisets():
     out_dir = "completed_multisets"
     os.makedirs(out_dir, exist_ok=True)
     
-    # ── find all files  input_multisets/multiset_*.txt  ─────────
+    # find all files  input_multisets/multiset_*.txt
     pattern    = os.path.join(in_dir, "multiset_*.txt")
     file_list  = sorted(glob.glob(pattern), key=_ms_label)
     
@@ -728,7 +720,7 @@ def complete_all_multisets():
         fout  = os.path.join(out_dir, f"completed_multiset_{ms_i}.txt")
         print(f"Processing multiset {ms_i} …")
 
-        # --- read trees ----------------------------------------------------
+        #  read trees
         with open(fin) as f:
             lines = [preprocess_newick(l.strip()) for l in f if l.strip()]
         all_trees=[]
@@ -760,7 +752,7 @@ def complete_all_multisets():
 
             p=0.5; p_reduced=False
             while U and p>=0:
-                # –––––– multi-leaf MCS first
+                # multi-leaf MCS first
                 from_old_script_selection_of_mcs = selection_of_mcs(
                     tgt_updated, host_list, U, p, multi_leaf=True)
                 if from_old_script_selection_of_mcs:
@@ -780,7 +772,7 @@ def complete_all_multisets():
                                 U -= get_leaf_set_ete(S_star)
                         if len(U)<before: continue
 
-                # –––––– single-leaf MCS
+                # single-leaf MCS
                 from_old_script_selection_single = selection_of_mcs(
                     tgt_updated, host_list, U, p, multi_leaf=False)
                 if from_old_script_selection_single:
@@ -804,13 +796,13 @@ def complete_all_multisets():
 
             leftover = U & (overall_leaves-get_leaf_set_ete(tgt_updated))
             if leftover:
-                print(f"    [WARN] still missing {len(leftover)} leaves {leftover}")
+                print(f"   [WARN] still missing {len(leftover)} leaves {leftover}")
             else:
-                print("    done.")
+                print("   done.")
 
             completed.append(tgt_updated)
 
-        # --- write output ---------------------------------------------------
+        # --- write output ---
         with open(fout,"w") as fo:
             for t in completed:
                 clear_internal_node_names(t)
