@@ -5,10 +5,10 @@
 # Version: August 2025
 
 """
-Phylogenetic tree-set completion algorithm.
+Phylogenetic tree set completion algorithm.
 
- – Reads each multiset  input_multisets/multiset_*.txt
- - Constructs consensus Maximal completion subtrees (MCS)
+ – Reads each multiset input_multisets/multiset_*.txt
+ - Constructs consensus Maximal completion subtrees (MCS) with distict leaves
  – Inserts each consensus MCS to complete a tree
  – Writes completed sets to completed_multisets/completed_multiset_i.txt
 """
@@ -149,12 +149,12 @@ class DistOracle:
 def scale_subtree(root, factor):
     for n in root.traverse(): n.dist *= factor
 
-def find_distinct_leaves(T, common):       # leaves unique to T
+def find_distinct_leaves(T, common):       # leaves unique to tree T
     return get_leaf_set_ete(T) - common
 
 #
 # Section 2b.  Objective function
-# (eligible edges are original edges; split branch parts remain original)
+# (eligible edges are original edges, and split branch parts remain original)
 #
 
 def find_optimal_insertion_point(target_tree, Dtgt,
@@ -894,3 +894,4 @@ def complete_all_multisets():
 # Main
 if __name__ == "__main__":
     complete_all_multisets()
+
