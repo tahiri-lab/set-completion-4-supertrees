@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 # Author: Aleksandr Koshkarov
-# Version: August 2025
 
 """
 Phylogenetic tree set completion algorithm.
@@ -71,16 +70,27 @@ def clear_internal_node_names(t):
 
 def mark_original_nodes(t):
     """
-    Mark the edges of the original target tree before any insertion.
-    We store an edge-level flag on the child node: child.is_original_edge == True
-    means the edge (child.up -> child) is original.
+    Mark and enumerate the edges of the original target tree before any insertion.
+    We store an edge-level flag/index on the child node:
+      child.is_original_edge == True means the edge (child.up -> child) is original,
+      child.edge_index is its fixed DFS order index.
     """
+    # Assign flags first
     for n in t.traverse():
         if n.up is not None:
             n.add_feature("is_original_edge", True)
         else:
-            # root has no incoming edge
             n.add_feature("is_original_edge", False)
+
+    # Depth-first enumeration of original edges
+    idx = 1
+    for n in t.traverse("preorder"):
+        if n.up is not None:
+            # this is an original edge (before any insertion)
+            n.add_feature("edge_index", idx)
+            idx += 1
+        else:
+            n.add_feature("edge_index", -1)  # root has no incoming edge
 
 
 # Section 2a. Distance oracle & optimization helpers
@@ -164,9 +174,22 @@ def find_optimal_insertion_point(target_tree, Dtgt,
     Objective function quadratic optimization over original edges only.
     An edge is eligible iff child.is_original_edge == True.
     We skip edges that lie fully inside a previously inserted subtree (child.inInserted).
+
+    Tie-breaking (to ensure uniqueness), applied when objective values are equal
+    within a small tolerance:
+      1) prefer smaller distance from the (original) root to the candidate v(x);
+      2) if still tied, prefer the candidate on the original edge with the
+         smallest fixed DFS index (edge_index).
     """
     best_edge, best_x, best_val = None, 0.0, float("inf")
+    best_root_dist = float("inf")
+    best_edge_idx  = float("inf")
+
     ncl_set = set(ncl_names)
+    root = target_tree  # ete3 Tree is already the root node
+
+    TOL = 1e-12
+    TOL2 = 1e-12
 
     for ch in target_tree.traverse("postorder"):
         par = ch.up
@@ -177,7 +200,7 @@ def find_optimal_insertion_point(target_tree, Dtgt,
         if not getattr(ch, "is_original_edge", False):
             continue
 
-        # skip edges fully inside a previously inserted subtree
+        # Skip edges fully inside a previously inserted subtree
         if getattr(ch, "inInserted", False):
             continue
 
@@ -185,7 +208,7 @@ def find_optimal_insertion_point(target_tree, Dtgt,
         if elen < 1e-15:     # effectively zero length
             continue
 
-        # proper-partition check (must split the anchor set)
+        # Proper-partition check (must split the anchor set)
         below = set(ch.get_leaf_names()) & ncl_set
         if len(below) == 0 or len(below) == len(ncl_names):
             continue  # anchors all on one side - skip
@@ -193,20 +216,20 @@ def find_optimal_insertion_point(target_tree, Dtgt,
         m = len(ncl_names)
         ch_leaf_set = set(ch.get_leaf_names())  # cache per edge
 
-        # closed-form optimum
+        # Closed-form optimum
         num = 0.0
         for n in ncl_names:
             sgn  = -1 if n in ch_leaf_set else +1
             num += sgn * (d_p[n] - Dtgt.dist_leaf_to_node(target_tree & n, par))
         x_opt = num / (elen * m)
 
-        # clamp x into the valid range [0,1)
+        # Clamp x into the valid range [0,1)
         if ch.is_leaf():          # cannot split within a terminal branch
             x_opt = max(0.0, min(x_opt, 1 - min_terminal / elen))
         else:
             x_opt = max(0.0, min(x_opt, 1.0 - eps))
 
-        # evaluate OF for candidate x’s
+        # Evaluate OF for candidate x’s
         for x in (x_opt, 0.0, 1.0 - eps):
             of = 0.0
             for n in ncl_names:
@@ -214,29 +237,52 @@ def find_optimal_insertion_point(target_tree, Dtgt,
                 obs = Dtgt.dist_leaf_to_node(target_tree & n, par) + sgn * x * elen
                 diff = obs - d_p[n]
                 of  += diff * diff
-            if of < best_val - 1e-12:
+
+            # Compute tie-break keys
+            root_dist = Dtgt.dist(root, par) + x * elen
+            edge_idx  = getattr(ch, "edge_index", float("inf"))
+
+            # Primary: smaller objective
+            if of < best_val - TOL:
                 best_edge, best_x, best_val = (par, ch), x, of
+                best_root_dist, best_edge_idx = root_dist, edge_idx
+                continue
+
+            # Tie-break on equal objective (within tolerance)
+            if abs(of - best_val) <= TOL:
+                # 1) smaller distance from root
+                if root_dist < best_root_dist - TOL2:
+                    best_edge, best_x, best_val = (par, ch), x, of
+                    best_root_dist, best_edge_idx = root_dist, edge_idx
+                    continue
+                if abs(root_dist - best_root_dist) <= TOL2:
+                    # 2) smaller edge index
+                    if edge_idx < best_edge_idx:
+                        best_edge, best_x, best_val = (par, ch), x, of
+                        best_root_dist, best_edge_idx = root_dist, edge_idx
 
     return best_edge, best_x, best_val
 
 def insert_subtree_at_point(target_tree, edge, x_opt, subtree_copy,
                             eps=1e-6, min_terminal=1e-9):
     """
-    Split behavior preserves the 'original edge' status:
+    Split behavior preserves the 'original edge' status and edge index:
       If edge (parent -> child) was original, then after splitting:
-        (parent -> mid) and (mid -> child) are both flagged as original edges.
+        (parent -> mid) and (mid -> child) are both flagged as original edges
+        and both inherit the same edge_index.
     The mid node itself is not marked 'inInserted'.
     """
     parent, child = edge
     orig_len = child.dist
     was_original_edge = getattr(child, "is_original_edge", False)
+    edge_idx = getattr(child, "edge_index", None)
 
-    # 1. almost-parent
+    # 1. Almost parent
     if x_opt <= eps:
         parent.add_child(subtree_copy)  # new edge is not original
         return
 
-    # 2. almost-child
+    # 2. Almost child
     if x_opt >= 1 - eps:
         # if child is internal, we can safely insert the subtree under it
         if not child.is_leaf():
@@ -246,34 +292,42 @@ def insert_subtree_at_point(target_tree, edge, x_opt, subtree_copy,
         d_up   = max(orig_len - min_terminal, min_terminal)
         d_down = min_terminal
         mid = Tree(); mid.dist = d_up
-        # mid is a backbone node: do NOT mark inInserted
-        # propagate original-edge status onto both resulting edges
+        # mid is a backbone node: do not mark inInserted
+        # propagate original-edge status and index onto both resulting edges
         mid.add_feature("is_original_edge", was_original_edge)
+        if edge_idx is not None:
+            mid.add_feature("edge_index", edge_idx)
 
         parent.remove_child(child)
         parent.add_child(mid)
         child.dist = d_down
         # edge (mid -> child) remains original
         child.add_feature("is_original_edge", was_original_edge)
+        if edge_idx is not None:
+            child.add_feature("edge_index", edge_idx)
         mid.add_child(child)          # keep the original leaf
         mid.add_child(subtree_copy)   # attach the new subtree (not original)
         assign_internal_node_names(target_tree)
         return
 
-    # 3. genuine split
+    # 3. Genuine split
     d_up   = max(x_opt * orig_len,       min_terminal)
     d_down = max((1 - x_opt) * orig_len, min_terminal)
 
     mid = Tree(); mid.dist = d_up
-    # mid is a backbone node: do NOT mark inInserted
-    # propagate original-edge status onto both resulting edges
+    # mid is a backbone node: do not mark inInserted
+    # propagate original-edge status and index onto both resulting edges
     mid.add_feature("is_original_edge", was_original_edge)
+    if edge_idx is not None:
+        mid.add_feature("edge_index", edge_idx)
 
     parent.remove_child(child)
     parent.add_child(mid)
     child.dist = d_down
     # edge (mid -> child) remains original
     child.add_feature("is_original_edge", was_original_edge)
+    if edge_idx is not None:
+        child.add_feature("edge_index", edge_idx)
     mid.add_child(child)
     mid.add_child(subtree_copy)   # connector to subtree is not original
     assign_internal_node_names(target_tree)
@@ -284,8 +338,8 @@ def insert_subtree_at_point(target_tree, edge, x_opt, subtree_copy,
 def compute_leaf_attachment_distance_from_hosts(c, host_trees, subtree_leaves):
     """
     Average distance from leaf c to att(S_j) over host_trees that contain c and subtree_leaves.
-    Here att(S_j) is the parent of MRCA(subtree_leaves) in the host tree; if MRCA is root,
-    we fall back to MRCA (no parent).
+    Here att(S_j) is the parent of MRCA(subtree_leaves) in the host tree. 
+    If MRCA is root, we fall back to MRCA (no parent).
     """
     s = 0.0
     k = 0
@@ -352,25 +406,25 @@ def insert_subtree_kncl(target_tree, original_target,
                         anchor_leaves_original,
                         k_user=None):
     """
-    • Scales subtree_star by global τ
-    • Finds common leaves (avg distances via attachment nodes over host trees)
-    • Solves quadratic OF to insert subtree along an oroginal edge
+    - Scales subtree_star by global τ
+    - Finds common leaves (avg distances via attachment nodes over host trees)
+    - Solves quadratic OF to insert subtree along an oroginal edge
     Returns True on success.
     """
     anchor_leaves_original = set(anchor_leaves_original)
     if len(anchor_leaves_original) < 2:
         return False
 
-    # 0. prepare names and distance oracle on current target tree
+    # 0. Prepare names and distance oracle on current target tree
     assign_internal_node_names(target_tree, "TGT")
     Dtgt = DistOracle(target_tree)
 
-    # 1. global-scale factor  τ
+    # 1. Global-scale factor  τ
     τ = compute_global_adjustment_rate(original_target,
                                        host_trees,
                                        anchor_leaves_original)
 
-    # 2. copy & scale subtree
+    # 2. Copy & scale subtree
     S = subtree_star.copy(method="deepcopy")
     scale_subtree(S, τ)
     for n in S.traverse():
@@ -378,20 +432,21 @@ def insert_subtree_kncl(target_tree, original_target,
 
     subtree_leaves = get_leaf_set_ete(S)
 
-    #  single-leaf vs. multi-leaf handling
+    #  Single-leaf vs. multi-leaf handling
     if len(subtree_leaves) == 1:
-        # Single-leaf case
+        # Single-leaf case: keep the leaf with its (scaled) connecting branch length
         leaf = next(iter(S.children)) if S.children else None
         if leaf is None:
             lf_name = next(iter(subtree_leaves))
             leaf = Tree(); leaf.name = lf_name; leaf.dist = 0.0
             S.add_child(leaf)
+        # After scaling, the leaf's 'dist' is the connecting branch length
         leaf.detach()
         S = S_root = leaf
-        attach_len = 0.0            # no connector edge for single leaves
+        attach_len = max(S_root.dist, 1e-9)  # use the scaled connector length
         leaf.add_feature("inInserted", True)
     else:
-        # multi-leaf: keep the small subtree; set connector length on the root
+        # Multi-leaf: keep the small subtree; set connector length on the root
         S_root = S
         raw = getattr(subtree_star, "connecting_length", 1.0)
         attach_len = max(raw * τ, 1e-9)
@@ -402,11 +457,11 @@ def insert_subtree_kncl(target_tree, original_target,
     for n in S_root.traverse():
         n.add_feature("inInserted", True)
 
-    # 3. average distances to attachment node across hosts
+    # 3. Average distances to attachment node across hosts
     d_avg = {}
     for c in anchor_leaves_original:
         if c in subtree_leaves:
-            # For anchors inside S*: distance to att = distance to S_root + connecting length
+            # For anchors inside S*: distance to att = distance to S_root + connecting branch length
             try:
                 d_inside = S.get_distance(c, S)  # scaled internal distance to root of S
             except:
@@ -427,7 +482,7 @@ def insert_subtree_kncl(target_tree, original_target,
     if len(ncl) < 2:
         return False  # need >= 2 anchors for optimization
 
-    # 5. target distances d_p (leaf-based scaling ρ_c)
+    # 5. Target distances d_p (leaf-based scaling ρ_c)
     d_p = {}
     for c in ncl:
         ρ = compute_local_leaf_based_rate(original_target,
@@ -520,7 +575,7 @@ def build_consensus_topology_from_splits_and_root(leaves, majority_splits, best_
 
 def build_weighted_consensus_topology(S_list, T_i):
     """
-    Build topology with weights; majority-rule threshold is fixed at 0.5.
+    Build topology with weights. Majority-rule threshold is fixed at 0.5.
     """
     all_leaves, root_clade_counts, split_counts = set(), defaultdict(float), defaultdict(float)
     w_j = compute_weights_globally();     sum_w = sum(w_j.values())
@@ -541,7 +596,7 @@ def build_weighted_consensus_topology(S_list, T_i):
     return build_consensus_topology_from_splits_and_root(all_leaves, majority_splits, best_root), \
            sorted({host_idx for (_, _, host_idx, _) in S_list})
 
-# branch lengths
+# Branch lengths
 
 def least_squares_fit_branch_lengths(consensus_tree, avg_dist):
     if not is_rooted_ete(consensus_tree):
@@ -651,14 +706,21 @@ def group_clusters_by_leafset(C_p):
     return list(groups.values())
 
 def max_coverage_group(groups, U):
+    """
+    Choose the group with maximum coverage. Break ties by lexicographic
+    order of the leaf set (to ensure invariance).
+    """
     best = None         # group that gives max coverage
     best_cov = -1       # numeric coverage value
+    best_key = None     # lexicographic key
     for G in groups:
         leaf_set = set().union(*G)
         cv = len(leaf_set & U)
-        if cv > best_cov:
+        lex_key = tuple(sorted(leaf_set))  # deterministic tie-breaker
+        if cv > best_cov or (cv == best_cov and (best_key is None or lex_key < best_key)):
             best_cov = cv
             best     = G
+            best_key = lex_key
     return best
 
 def extract_subtree(C, T):
@@ -710,27 +772,35 @@ def selection_of_mcs(T_i, T_set, U, p=0.5, multi_leaf=True):
 def build_consensus_mcs(S_list):
     """
     Build a consensus MCS for a selected group (fixed 0.5 majority threshold).
-    Returns a list of consensus subtrees (often 1) and host index lists.
+    Returns a consensus subtree and host index lists.
     """
     if not S_list:
         return [], []
-    max_leaf_count = max(len(get_leaf_set_ete(x[0])) for x in S_list)
-    connecting_lens = [x[3] for x in S_list]
-    combined_avg = (sum(connecting_lens) / len(connecting_lens)
-                    if connecting_lens else 1.0)
-    combined_avg = max(combined_avg, 1e-9)
 
-    # single-leaf consensus
+    # Weighted connecting branch length
+    w_map = compute_weights_globally()
+
+    # Single-leaf consensus
+    max_leaf_count = max(len(get_leaf_set_ete(x[0])) for x in S_list)
     if max_leaf_count == 1:
-        leaf2lens = defaultdict(list)
-        for (Sj, _, _, cl) in S_list:
+        # For each leaf, compute weighted average of its connecting branch length
+        leaf2num = defaultdict(float)
+        leaf2den = defaultdict(float)
+        for (Sj, _, host_idx, cl) in S_list:
+            w = w_map.get(host_idx, 0.0)
+            if w == 0.0:
+                continue
             for lf in get_leaf_set_ete(Sj):
-                leaf2lens[lf].append(cl)
+                leaf2num[lf] += w * cl
+                leaf2den[lf] += w
         single_trees, host_lists = [], []
-        for lf, lens in leaf2lens.items():
+        for lf in sorted(leaf2den.keys()):
+            den = leaf2den[lf]
+            val = (leaf2num[lf] / den) if den > 0 else 1.0
+            val = max(val, 1e-9)
             t = Tree()
-            t.add_child(name=lf, dist=max(sum(lens) / len(lens), 1e-9))
-            t.connecting_length = t.children[0].dist
+            t.add_child(name=lf, dist=val)  # connector length is on the single child
+            t.connecting_length = val
             single_trees.append(t)
             host_lists.append(sorted(
                 {host_idx for (S, _, host_idx, _) in S_list
@@ -738,11 +808,21 @@ def build_consensus_mcs(S_list):
             ))
         return single_trees, host_lists
 
-    # Multi-leaf consensus
+    # Multi-leaf consensus (topology by weighted majority rule)
     consensus_tree, host_idxs = build_weighted_consensus_topology(S_list, global_T_i)
     if not consensus_tree or len(consensus_tree) == 0:
         return [], []
+
+    # Weighted average connecting branch across contributing hosts
+    num = den = 0.0
+    for (_, _, host_idx, cl) in S_list:
+        w = w_map.get(host_idx, 0.0)
+        num += w * cl
+        den += w
+    combined_avg = max((num / den) if den > 0 else 1.0, 1e-9)
     consensus_tree.connecting_length = combined_avg
+
+    # Fit branch lengths
     wt = compute_weights_globally()
     avg_dist, _ = compute_average_distances(S_list, wt)
     if len(consensus_tree.get_leaves()) > 2:
@@ -781,7 +861,7 @@ def complete_all_multisets():
     out_dir = "completed_multisets"
     os.makedirs(out_dir, exist_ok=True)
 
-    # find all files  input_multisets/multiset_*.txt
+    # Find all files  input_multisets/multiset_*.txt
     pattern    = os.path.join(in_dir, "multiset_*.txt")
     file_list  = sorted(glob.glob(pattern), key=_ms_label)
 
@@ -790,7 +870,7 @@ def complete_all_multisets():
         fout  = os.path.join(out_dir, f"completed_multiset_{ms_i}.txt")
         print(f"Processing multiset {ms_i} …")
 
-        #  read trees
+        #  Read trees
         with open(fin) as f:
             lines = [preprocess_newick(l.strip()) for l in f if l.strip()]
         all_trees = []
@@ -807,7 +887,7 @@ def complete_all_multisets():
             print(f"  completing tree {idx}/{len(all_trees)}")
             tgt_updated = orig.copy("deepcopy")
             # Mark original edges so later we only anchor on original edges,
-            # and split parts remain original.
+            # and split parts remain original; assign fixed edge indices (DFS).
             mark_original_nodes(tgt_updated)
 
             host_list = [all_trees[j].copy("deepcopy")
@@ -825,7 +905,7 @@ def complete_all_multisets():
 
             p = 0.5
             while U and p >= 0:
-                # multi-leaf MCS first
+                # Multi-leaf MCS first
                 selected = selection_of_mcs(
                     tgt_updated, host_list, U, p, multi_leaf=True)
                 if selected:
